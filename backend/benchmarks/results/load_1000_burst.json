@@ -1,0 +1,37 @@
+{
+  "connections": 1000,
+  "rooms": 20,
+  "members_per_room": 50,
+  "mode": "burst",
+  "senders": 40,
+  "duration_s": 30,
+  "connect_seconds": 8.68,
+  "connections_per_instance": {
+    "api-1": 500,
+    "api-2": 500
+  },
+  "messages_sent": 1200,
+  "deliveries_expected": 60000,
+  "deliveries_received": 60000,
+  "delivery_rate_per_s": 2000.0,
+  "latency_ms": {
+    "p50": 317.3,
+    "p95": 453.0,
+    "p99": 540.8,
+    "max": 571.2
+  },
+  "memory": {
+    "api-1": {
+      "idle_rss_mb": 78.9,
+      "with_connections_rss_mb": 161.3,
+      "connections": 500,
+      "kb_per_connection": 168.8
+    },
+    "api-2": {
+      "idle_rss_mb": 78.8,
+      "with_connections_rss_mb": 161.1,
+      "connections": 500,
+      "kb_per_connection": 168.6
+    }
+  }
+}

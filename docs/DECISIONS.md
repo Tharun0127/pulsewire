@@ -2,6 +2,17 @@
 
 Every important choice in Pulsewire, the alternatives, and why.
 
+## Transport: why WebSockets (not polling, long polling or SSE)
+
+| Option | How it works | Why not for chat |
+|---|---|---|
+| Short polling | Client asks "anything new?" every N seconds | Latency up to N seconds, and most requests return nothing. 1,000 users polling every 2 s = 500 req/s of mostly empty answers. |
+| Long polling | Server holds each request open until there is news | Better latency, but every message costs a new HTTP request and headers, reconnect gaps between polls can lose ordering, and sending is a separate request anyway. |
+| Server-Sent Events | One long HTTP response streaming server→client events | Great for one-way feeds (notifications, tickers), with auto-reconnect and `Last-Event-ID` built in. But chat is **two-way**: typing, receipts, pings and sends would all be separate POSTs. |
+| **WebSockets** | One TCP connection upgraded once, full-duplex frames both ways | Lowest latency and overhead for frequent small messages in both directions. The costs are stateful connections, which need the scaling work in this project, and reconnection and replay that we must build ourselves (SSE gives some of that for free). |
+
+The same reasoning is why SeatSentinel (a sibling project) polls: a seat map refreshed every 2 s does not need a socket.
+
 ## Topology
 
 ### Two API instances, one uvicorn worker each, behind nginx

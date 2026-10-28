@@ -12,6 +12,7 @@ The Bus is pluggable:
 - RedisBus: Redis pub/sub, one channel per room (app/realtime/redis_bus.py).
 """
 import asyncio
+import json
 import logging
 
 from app.realtime.connections import CLOSE_SLOW_CONSUMER, Connection, ConnectionRegistry
@@ -50,9 +51,12 @@ class Hub:
         """Called by the bus for every event on a room this instance follows."""
         if event.get("type") == "presence":
             self.last_presence[room_id] = event["online_user_ids"]
-        event = {**event, "delivered_via": self.instance_id}
+        # Serialise ONCE per event, not once per socket: with 25 local members
+        # in a room that is 1 json.dumps instead of 25. Measured to matter
+        # under bursts (see docs/BENCHMARKS.md).
+        payload = json.dumps({**event, "delivered_via": self.instance_id})
         for conn in self.registry.in_room(room_id):
-            if not conn.enqueue(event):
+            if not conn.enqueue_payload(payload):
                 logger.warning("closing slow consumer %s (user %s)", conn.id, conn.user_id)
                 # Fire and forget: the reader loop notices and cleans up.
                 asyncio.create_task(conn.close(CLOSE_SLOW_CONSUMER, "too slow"))

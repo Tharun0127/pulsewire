@@ -44,13 +44,17 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
     user_id, username = user
     conn = Connection(websocket, user_id, username, state.settings.send_queue_size)
     room_ids = await chat.room_ids_for_user(state.session_factory, user_id)
+    # Order matters: subscribe FIRST, then read each room's last seq. Any
+    # message published after the subscription arrives live; anything before
+    # it is <= room_seqs and the client fetches it. Nothing falls in between.
     await state.hub.register(conn, room_ids)
+    hello = {"type": "hello", "instance": state.settings.instance_id, "user_id": user_id,
+             "username": username, "rooms": room_ids,
+             # Tells a reconnecting client at once whether it missed anything.
+             "room_seqs": await chat.last_seqs(state.session_factory, room_ids)}
+    await websocket.send_text(json.dumps(hello))  # always the first frame
+    conn.start_writer()
     await on_connect(state, conn)
-    # room_seqs tells a reconnecting client immediately whether it missed
-    # anything: if its last seen seq for a room is lower, it fetches the gap.
-    conn.enqueue({"type": "hello", "instance": state.settings.instance_id, "user_id": user_id,
-                  "username": username, "rooms": room_ids,
-                  "room_seqs": await chat.last_seqs(state.session_factory, room_ids)})
     try:
         while True:
             raw = await websocket.receive_text()

@@ -30,12 +30,22 @@ class Connection:
         self.rooms: set[int] = set()
         self.last_seen = time.monotonic()
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=queue_size)
+        self.writer: asyncio.Task | None = None
+
+    def start_writer(self) -> None:
+        """Start draining the queue. Called after `hello` has been sent, so
+        hello is always the first frame even if room events arrived while
+        the connection was being registered (they wait in the queue)."""
         self.writer = asyncio.create_task(self._write_loop())
 
     def enqueue(self, event: dict) -> bool:
         """Queue an event for this client. False if the client is too slow."""
+        return self.enqueue_payload(json.dumps(event))
+
+    def enqueue_payload(self, payload: str) -> bool:
+        """Queue an already-serialised event (used for room fan-out)."""
         try:
-            self.queue.put_nowait(json.dumps(event))
+            self.queue.put_nowait(payload)
             return True
         except asyncio.QueueFull:
             return False
@@ -54,6 +64,8 @@ class Connection:
             pass
 
     async def stop_writer(self) -> None:
+        if self.writer is None:
+            return
         self.writer.cancel()
         try:
             await self.writer

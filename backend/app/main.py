@@ -55,7 +55,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health() -> dict:
         return {"status": "ok", "instance": settings.instance_id}
 
+    @app.get("/metrics/instance")
+    async def instance_metrics() -> dict:
+        """Connections and memory of THIS process, read by the load test."""
+        hub: Hub = app.state.hub
+        return {"instance": settings.instance_id, "connections": len(hub.registry.all),
+                "rooms_subscribed": len(hub.registry.by_room), "rss_mb": rss_mb()}
+
     return app
+
+
+def rss_mb() -> float | None:
+    """Resident memory of this process from /proc (Linux only)."""
+    try:
+        with open("/proc/self/status") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except OSError:
+        return None
+    return None
 
 
 app = create_app()

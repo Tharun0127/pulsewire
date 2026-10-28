@@ -1,5 +1,6 @@
 """WebSocket chat on ONE instance: lifecycle, persistence, ordering, history."""
 import asyncio
+import json
 import uuid
 
 import pytest
@@ -25,8 +26,10 @@ async def test_hello_lists_my_rooms_and_instance(start_servers, make_user, make_
     alice_id, alice = await make_user("alice")
     room = await make_room("general", [alice_id])
     async with await connect(api1, alice) as ws:
-        hello = await receive_until(ws, is_type("hello"))
-    assert hello["rooms"] == [room] and hello["instance"] == "test-1"
+        first = json.loads(await ws.recv())
+    # hello is guaranteed to be the very first frame.
+    assert first["type"] == "hello"
+    assert first["rooms"] == [room] and first["instance"] == "test-1"
 
 
 async def test_message_is_persisted_acked_then_broadcast(start_servers, make_user, make_room, db):
