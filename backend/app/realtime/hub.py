@@ -24,6 +24,8 @@ class Hub:
         self.instance_id = instance_id
         self.registry = ConnectionRegistry()
         self.bus = None  # set by the app at startup
+        # Last presence list pushed per room, so the sweeper only sends changes.
+        self.last_presence: dict[int, list[int]] = {}
 
     async def register(self, conn: Connection, room_ids: list[int]) -> None:
         self.registry.add(conn)
@@ -38,6 +40,7 @@ class Hub:
     async def unregister(self, conn: Connection) -> None:
         for room_id in self.registry.remove(conn):
             # Last local socket left: stop receiving events nobody here needs.
+            self.last_presence.pop(room_id, None)
             await self.bus.unsubscribe(room_id)
 
     async def publish(self, room_id: int, event: dict) -> None:
@@ -45,6 +48,8 @@ class Hub:
 
     def deliver(self, room_id: int, event: dict) -> None:
         """Called by the bus for every event on a room this instance follows."""
+        if event.get("type") == "presence":
+            self.last_presence[room_id] = event["online_user_ids"]
         event = {**event, "delivered_via": self.instance_id}
         for conn in self.registry.in_room(room_id):
             if not conn.enqueue(event):

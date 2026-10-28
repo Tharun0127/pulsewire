@@ -7,7 +7,8 @@ from sqlalchemy.exc import IntegrityError
 
 from app import chat
 from app.auth import current_user
-from app.models import Room, RoomMember
+from app.models import Room, RoomMember, User
+from app.realtime import presence
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
@@ -43,8 +44,34 @@ async def list_rooms(request: Request, user=Depends(current_user)):
     )
     async with request.app.state.session_factory() as session:
         rows = (await session.execute(query)).all()
-    return [RoomOut(id=r.id, name=r.name, member_count=n, is_member=bool(m), last_seq=r.last_seq)
+        pairs = (await session.execute(select(RoomMember.room_id, RoomMember.user_id))).all()
+    # One pipelined Redis round trip for every member's presence.
+    online = await presence.online_user_ids(request.app.state.redis, list({uid for _, uid in pairs}))
+    online_per_room: dict[int, int] = {}
+    for room_id, uid in pairs:
+        online_per_room[room_id] = online_per_room.get(room_id, 0) + (uid in online)
+    return [RoomOut(id=r.id, name=r.name, member_count=n, is_member=bool(m), last_seq=r.last_seq,
+                    online_count=online_per_room.get(r.id, 0))
             for r, n, m in rows]
+
+
+@router.get("/{room_id}/members")
+async def room_members(room_id: int, request: Request, user=Depends(current_user)):
+    """Members with online status and receipt positions (for the ticks)."""
+    user_id, _ = user
+    query = (
+        select(RoomMember.user_id, User.username, RoomMember.last_delivered_seq, RoomMember.last_read_seq)
+        .join(User, User.id == RoomMember.user_id)
+        .where(RoomMember.room_id == room_id)
+        .order_by(User.username)
+    )
+    async with request.app.state.session_factory() as session:
+        if not await chat.is_member(session, room_id, user_id):
+            raise HTTPException(403, "join the room first")
+        rows = (await session.execute(query)).all()
+    online = await presence.online_user_ids(request.app.state.redis, [r.user_id for r in rows])
+    return [{"user_id": r.user_id, "username": r.username, "online": r.user_id in online,
+             "delivered_seq": r.last_delivered_seq, "read_seq": r.last_read_seq} for r in rows]
 
 
 @router.post("", response_model=RoomOut, status_code=201)

@@ -22,6 +22,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app import chat
 from app.auth import decode_token
+from app.realtime import presence, sweeper, typing
 from app.realtime.connections import CLOSE_UNAUTHORIZED, Connection
 
 logger = logging.getLogger("pulsewire.ws")
@@ -64,11 +65,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
 
 
 async def on_connect(state, conn: Connection) -> None:
-    """Hook for presence (phase 4)."""
+    await presence.touch(state.redis, conn.user_id, conn.id, state.settings.presence_ttl_seconds)
+    await announce_presence(state, conn.rooms)
 
 
 async def on_disconnect(state, conn: Connection) -> None:
-    """Hook for presence (phase 4)."""
+    # Clean close: remove this connection now instead of waiting for the TTL.
+    # Other tabs of the same user keep them online.
+    await presence.leave(state.redis, conn.user_id, conn.id)
+    await announce_presence(state, conn.rooms)
+
+
+async def announce_presence(state, room_ids) -> None:
+    """Publish fresh presence for these rooms to every instance right away.
+    (The sweeper covers changes nobody announces, like TTL expiry.)"""
+    for room_id in list(room_ids):
+        await state.hub.publish(room_id, await sweeper.presence_event(state, room_id))
 
 
 async def handle(state, conn: Connection, raw: str) -> None:
@@ -121,14 +133,29 @@ async def handle_subscribe(state, conn: Connection, event: dict) -> None:
         return
     await state.hub.join(conn, room_id)
     conn.enqueue({"type": "subscribed", "room_id": room_id})
+    await announce_presence(state, [room_id])
 
 
 async def handle_ping(state, conn: Connection, event: dict) -> None:
+    # The heartbeat: keeps this connection's presence entry alive.
+    await presence.touch(state.redis, conn.user_id, conn.id, state.settings.presence_ttl_seconds)
     conn.enqueue({"type": "pong"})
+
+
+async def handle_typing(state, conn: Connection, event: dict) -> None:
+    room_id = event.get("room_id")
+    if room_id not in conn.rooms:
+        return
+    if await typing.should_broadcast(state.redis, room_id, conn.user_id):
+        await state.hub.publish(room_id, {
+            "type": "typing", "room_id": room_id, "user_id": conn.user_id, "username": conn.username,
+            "expires_in_ms": int(state.settings.typing_ttl_seconds * 1000),
+        })
 
 
 HANDLERS = {
     "send": handle_send,
     "subscribe": handle_subscribe,
     "ping": handle_ping,
+    "typing": handle_typing,
 }

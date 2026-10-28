@@ -1,4 +1,5 @@
 """FastAPI application factory."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -7,12 +8,19 @@ from redis.asyncio import Redis
 
 from app.config import Settings, get_settings
 from app.db import build_engine, build_session_factory
-from app.realtime import ws
+from app.realtime import sweeper, ws
 from app.realtime.hub import Hub, LocalBus
 from app.realtime.redis_bus import RedisBus
 from app.routers import auth, rooms
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+async def close_all_sockets(hub: Hub) -> None:
+    """On shutdown (deploy, scale-in), close sockets with 1012 "service
+    restart" so clients reconnect at once, via the load balancer, to another
+    instance, instead of waiting for a timeout."""
+    await asyncio.gather(*(conn.close(1012, "server restarting") for conn in list(hub.registry.all)))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -30,7 +38,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hub.bus = RedisBus(app.state.redis, hub) if settings.use_redis_bus else LocalBus(hub)
         await hub.bus.start()
         app.state.hub = hub
+        sweeper_task = asyncio.create_task(sweeper.run(app.state))
         yield
+        sweeper_task.cancel()
+        await close_all_sockets(hub)
         await hub.bus.stop()
         await app.state.redis.aclose()
         await engine.dispose()

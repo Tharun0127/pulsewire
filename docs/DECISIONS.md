@@ -70,3 +70,25 @@ Every important choice in Pulsewire, the alternatives, and why.
 - **Redis Streams** (`XADD` per room, consumer reads with `XREAD` from a last ID) would make the bus itself replayable: an instance that comes back resumes from the last stream ID it saw, with trimming via `MAXLEN`.
 - **Kafka** (topic partitioned by room id) adds durable, replicated, ordered logs, with consumer groups and replay measured in days, and scales to very high message rates across many brokers. The cost is a heavier system to run, and per-partition (not per-room) ordering unless rooms map to partitions.
 - **A single Redis is also a single point of failure and a throughput ceiling.** Next steps would be Redis Sentinel/Cluster (sharded pub/sub in Redis 7 with `SSUBSCRIBE`) or moving to one of the above.
+
+## Presence
+
+### A sorted set per user, scored by connection expiry
+- `presence:user:<id>`: member = connection id, score = now + 30 s, refreshed on connect and on every client ping (every 15 s); the key itself also gets an `EXPIRE`. "Online" = at least one score in the future (`ZCOUNT now +inf`).
+- **Why not one key per user with a TTL:** with two tabs (possibly on different instances), closing one tab would either wrongly mark the user offline (DEL) or leave them "online" for 30 s after the last tab closed. Per-connection entries get both right; there is a test with tabs on api-1 and api-2.
+- **Clean close** removes the connection's entry at once (instant offline). **Sudden disconnect** (no close frame, no pings) lets the entry's score fall into the past: offline within TTL (30 s, up to two missed pings) plus at most one sweep (5 s).
+
+### Who notices an expiry? The sweeper
+- Nothing "happens" in Redis when a TTL runs out that the app can cheaply react to (keyspace notifications are fire-and-forget, need server config, and would reach every instance). So each instance sweeps every 5 s: it recomputes presence for the rooms **it** serves and pushes changes only to its **own** sockets. Work scales with the instance's own connections.
+- Joins and clean leaves are announced immediately through the bus, so the sweeper only covers the silent cases.
+- The test checks that a user who goes silent is shown offline **before** the idle-close fires, so it proves the TTL path itself.
+
+### Idle timeout closes half-open sockets
+- A socket that sent nothing (not even a ping) for 45 s is closed with **4410**. A half-open TCP connection can otherwise look open to the server for a long time, holding memory and a pub/sub subscription.
+
+### Graceful shutdown
+- On shutdown each instance closes its sockets with **1012 (service restart)**, so clients reconnect immediately (through nginx, to a healthy instance) instead of discovering the dead socket on their next ping.
+
+## Typing indicators
+- **Client throttle** (at most one event per 2 s while typing) plus a **server throttle**: `SET typing:<room>:<user> NX PX 2000`, broadcasting only when the key was new. Because the key is in shared Redis, the throttle holds across instances and against a misbehaving client (the test spams 10 events and sees 1 broadcast).
+- Receivers show the indicator for `expires_in_ms` (5 s) after the last event, so there is no "stopped typing" message to lose.

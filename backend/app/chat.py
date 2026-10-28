@@ -31,6 +31,11 @@ async def is_member(session: AsyncSession, room_id: int, user_id: int) -> bool:
     ) is not None
 
 
+async def room_member_ids(session_factory: async_sessionmaker, room_id: int) -> list[int]:
+    async with session_factory() as session:
+        return list(await session.scalars(select(RoomMember.user_id).where(RoomMember.room_id == room_id)))
+
+
 async def room_ids_for_user(session_factory: async_sessionmaker, user_id: int) -> list[int]:
     async with session_factory() as session:
         return list(await session.scalars(select(RoomMember.room_id).where(RoomMember.user_id == user_id)))
