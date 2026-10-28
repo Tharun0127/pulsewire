@@ -108,3 +108,13 @@ Every important choice in Pulsewire, the alternatives, and why.
 - **Order of operations on reconnect:** connect first (live events start arriving and are kept), read `hello.room_seqs`, fetch `GET /rooms/{id}/messages?after_seq=<last seen>`, then merge everything by seq. Fetching before connecting would leave a window where a message is neither in the fetched page nor received live.
 - **No duplicates, no gaps:** the client keys messages by seq, so a message arriving both live and from history is stored once. If a live message arrives with `seq > last + 1`, the client knows something is missing and fetches the gap. The test reconnects Bob to the **other** instance while Alice keeps sending, and checks seqs 1..6 exactly.
 - **Unacked sends are resent with the same `client_msg_id`** after reconnecting. The unique constraint makes that safe: the server acks with the original seq and does not broadcast again (tested by killing the TCP connection between send and ack).
+
+## Frontend
+
+- **One `ChatSocket` class owns all connection reliability** (`frontend/src/socket.ts`): backoff with full jitter, 15 s heartbeat, resend of unacked messages with the same `client_msg_id`, immediate retry when the browser fires `online`, and no retry on 4401. The React code only sees events and a status.
+- **Messages stored per room keyed by seq** (`useChat.ts`), the same algorithm as the Python reference client in the tests. Live and fetched copies of one message collapse into one, and a seq jump triggers a catch-up fetch.
+- **Optimistic "pending" bubble** (🕓) until the server echoes the message; then ✓ / ✓✓ / blue ✓✓ from the members' receipt positions.
+- **Each message shows `served_by → delivered_via`** (e.g. `api-1 → api-2`), plus a server picker on the login screen (load balancer, api-1 only, api-2 only) so cross-server chat can be shown with two browser windows.
+- **Infinite scroll upward** uses the oldest loaded seq as the cursor, and keeps the reading position fixed by adding the height difference after older messages are prepended.
+- **Receipts batched every 500 ms** (highest seq per room) and typing throttled to one event per 2 s on the client, matching the server-side throttles.
+- **No WebSocket library on the client:** the browser's native `WebSocket` is enough once reconnection is handled explicitly.
