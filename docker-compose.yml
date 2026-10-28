@@ -1,0 +1,91 @@
+name: pulsewire
+
+# Two identical API instances behind an nginx load balancer. A user on api-1
+# can chat with a user on api-2 because both instances relay room events
+# through Redis pub/sub.
+
+x-api: &api
+  build: ./backend
+  environment: &api-env
+    DATABASE_URL: postgresql+asyncpg://pulse:pulse@db:5432/pulsewire
+    TEST_DATABASE_URL: postgresql+asyncpg://pulse:pulse@db:5432/pulsewire_test
+    REDIS_URL: redis://redis:6379/0
+    TEST_REDIS_URL: redis://redis:6379/15
+    JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+    start_period: 30s
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: pulsewire-db
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB: pulsewire
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulsewire"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: pulsewire-redis
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6373:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  api-1:
+    <<: *api
+    container_name: pulsewire-api-1
+    environment:
+      <<: *api-env
+      INSTANCE_ID: api-1
+      # Only one instance runs migrations, so they never race each other.
+      RUN_MIGRATIONS: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  api-2:
+    <<: *api
+    container_name: pulsewire-api-2
+    environment:
+      <<: *api-env
+      INSTANCE_ID: api-2
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      api-1:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: pulsewire-nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8003:80"
+    depends_on:
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+
+volumes:
+  pgdata:
