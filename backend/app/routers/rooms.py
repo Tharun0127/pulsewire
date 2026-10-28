@@ -1,10 +1,11 @@
 """Rooms: list, create, join."""
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
+from app import chat
 from app.auth import current_user
 from app.models import Room, RoomMember
 
@@ -59,6 +60,27 @@ async def create_room(body: RoomCreate, request: Request, user=Depends(current_u
         await add_member(session, room.id, user_id)
         await session.commit()
     return RoomOut(id=room.id, name=room.name, member_count=1, is_member=True, last_seq=0)
+
+
+@router.get("/{room_id}/messages")
+async def room_messages(
+    room_id: int, request: Request, user=Depends(current_user),
+    before_seq: int | None = Query(default=None, ge=1),
+    after_seq: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """History with a seq cursor: ?before_seq=X scrolls up, ?after_seq=X catches up."""
+    user_id, _ = user
+    if before_seq is not None and after_seq is not None:
+        raise HTTPException(422, "use before_seq or after_seq, not both")
+    factory = request.app.state.session_factory
+    async with factory() as session:
+        if not await chat.is_member(session, room_id, user_id):
+            raise HTTPException(403, "join the room first")
+    messages = await chat.history(factory, room_id, before_seq=before_seq, after_seq=after_seq, limit=limit)
+    return {"room_id": room_id, "messages": messages,
+            # The next cursor for scrolling up; None when the start is reached.
+            "next_before_seq": messages[0]["seq"] if len(messages) == limit and after_seq is None else None}
 
 
 @router.post("/{room_id}/join", status_code=204)

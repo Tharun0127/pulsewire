@@ -28,3 +28,21 @@ Every important choice in Pulsewire, the alternatives, and why.
 ## Testing
 
 - **Each test starts two real uvicorn servers in-process** (`test-1`, `test-2`) on random ports, sharing a test Postgres DB and Redis DB 15, like api-1 and api-2 share `db` and `redis`. Clients use the real `websockets` library over TCP. That tests the actual network path (handshake, auth, pub/sub hop) rather than an in-memory shortcut.
+
+## WebSocket lifecycle
+
+- **Auth on connect with the JWT in the query string** (`/ws?token=...`): browsers cannot set an `Authorization` header on a WebSocket. A bad token is accepted, then closed with code **4401**, so the client can tell "do not retry, log in again" apart from a network drop. (Rejecting the handshake with HTTP 403 would look like any other connection failure to the browser.)
+- **One socket per browser tab, multiplexing all rooms.** On connect the server subscribes the socket to every room the user is a member of; after joining a new room over REST, the client sends `subscribe`.
+- **Per-connection outgoing queue + writer task.** Broadcasting means putting the event on N queues, which never blocks, so one slow phone cannot delay the whole room. A full queue (1,000 events) closes that socket with **4408**; the client reconnects and catches up from history instead of the server buffering unbounded data.
+- **Cleanup in `finally`:** clean close, network drop, server close or crash all run the same code: unregister from rooms (unsubscribing the room channel when the last local socket leaves), stop the writer, update presence.
+
+## Ordering and persistence
+
+- **Persist first, then publish.** Anything a client has seen is already in Postgres, so a client that missed a broadcast can always fetch it.
+- **Per-room seq from `UPDATE rooms SET last_seq = last_seq + 1 RETURNING last_seq`** in the same transaction as the insert. The row lock serialises senders in one room (seq N, N+1, no gaps, no duplicates), while different rooms never block each other. Tested with 10 users sending 50 messages at once: seqs 1..50 exactly.
+- **Alternatives:** a global `BIGSERIAL` id (unique, but not gapless per room, so clients cannot detect a missing message); a Redis `INCR` per room (fast, but can disagree with the database if the insert fails afterwards, leaving a gap).
+- **Idempotent send** via `client_msg_id`: a resend is acked with the original seq and **not** re-broadcast.
+
+## History
+
+- **Cursor pagination on seq** (`before_seq` scrolls up, `after_seq` catches up), not OFFSET. New messages arrive while you scroll, so offsets shift and you would see duplicates or skip messages. `seq < X` always means the same rows, and the `(room_id, seq)` unique index turns every page into an index range scan.
