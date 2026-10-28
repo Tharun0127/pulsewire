@@ -34,9 +34,13 @@ connection). Details and analysis: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Screenshots
 
-| Chat: messages accepted by api-1 or api-2, ticks, online status | Login with server picker (load balancer / api-1 / api-2) |
+| Alice, connected to **api-1** | Bob, connected to **api-2**: the same conversation |
 |---|---|
-| ![Chat](docs/screenshots/chat.png) | ![Login](docs/screenshots/login.png) |
+| ![Chat as Alice on api-1](docs/screenshots/chat.png) | ![Chat as Bob on api-2](docs/screenshots/chat-bob-on-api-2.png) |
+
+| Login with server picker (load balancer / api-1 / api-2) |
+|---|
+| ![Login](docs/screenshots/login.png) |
 
 Each bubble shows `served_by → delivered_via` (for example `api-2 → api-1`), its per-room sequence number, and sent / delivered / read ticks.
 
