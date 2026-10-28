@@ -92,3 +92,19 @@ Every important choice in Pulsewire, the alternatives, and why.
 ## Typing indicators
 - **Client throttle** (at most one event per 2 s while typing) plus a **server throttle**: `SET typing:<room>:<user> NX PX 2000`, broadcasting only when the key was new. Because the key is in shared Redis, the throttle holds across instances and against a misbehaving client (the test spams 10 events and sees 1 broadcast).
 - Receivers show the indicator for `expires_in_ms` (5 s) after the last event, so there is no "stopped typing" message to lose.
+
+## Receipts (sent / delivered / read)
+
+- **Sent (✓)** = the server's `ack`, sent only after the message is committed to Postgres.
+- **Delivered (✓✓)** = the recipient's client got it and replied `delivered`; **read (blue ✓✓)** = it was on screen and the client replied `read`.
+- **Group rule:** like WhatsApp groups, a message shows delivered/read when **every other member** has reached its seq. The members endpoint returns everyone's positions so the UI can also show "read by 2 of 3".
+- **Stored as high-water marks** (`last_delivered_seq`, `last_read_seq`): one UPDATE per receipt, not one row per message per member. Only possible because seq is a total order within a room.
+- **Monotonic and clamped in SQL:** `GREATEST(current, LEAST(seq, room.last_seq))`, applied only `WHERE` it moves forward. Late or duplicate receipts from a reconnecting client cannot move ticks backwards, and a client cannot claim to have read the future. No change → no broadcast.
+- **The client batches receipts** (highest seq per room, at most every 500 ms) so a burst of 100 messages costs one UPDATE, not 100.
+
+## Reconnection and missed messages
+
+- **Client:** exponential backoff with full jitter (`random(0, min(30 s, 0.5 s × 2^attempt))`). Jitter matters: when an instance restarts, all its clients drop at the same instant, and without jitter they would all retry in lock-step and hammer the survivor. Close code 4401 (bad token) is never retried.
+- **Order of operations on reconnect:** connect first (live events start arriving and are kept), read `hello.room_seqs`, fetch `GET /rooms/{id}/messages?after_seq=<last seen>`, then merge everything by seq. Fetching before connecting would leave a window where a message is neither in the fetched page nor received live.
+- **No duplicates, no gaps:** the client keys messages by seq, so a message arriving both live and from history is stored once. If a live message arrives with `seq > last + 1`, the client knows something is missing and fetches the gap. The test reconnects Bob to the **other** instance while Alice keeps sending, and checks seqs 1..6 exactly.
+- **Unacked sends are resent with the same `client_msg_id`** after reconnecting. The unique constraint makes that safe: the server acks with the original seq and does not broadcast again (tested by killing the TCP connection between send and ack).

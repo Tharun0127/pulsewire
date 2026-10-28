@@ -20,7 +20,7 @@ import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app import chat
+from app import chat, receipts
 from app.auth import decode_token
 from app.realtime import presence, sweeper, typing
 from app.realtime.connections import CLOSE_UNAUTHORIZED, Connection
@@ -46,8 +46,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
     room_ids = await chat.room_ids_for_user(state.session_factory, user_id)
     await state.hub.register(conn, room_ids)
     await on_connect(state, conn)
+    # room_seqs tells a reconnecting client immediately whether it missed
+    # anything: if its last seen seq for a room is lower, it fetches the gap.
     conn.enqueue({"type": "hello", "instance": state.settings.instance_id, "user_id": user_id,
-                  "username": username, "rooms": room_ids})
+                  "username": username, "rooms": room_ids,
+                  "room_seqs": await chat.last_seqs(state.session_factory, room_ids)})
     try:
         while True:
             raw = await websocket.receive_text()
@@ -153,9 +156,20 @@ async def handle_typing(state, conn: Connection, event: dict) -> None:
         })
 
 
+async def handle_receipt(state, conn: Connection, event: dict) -> None:
+    room_id, seq = event.get("room_id"), event.get("seq")
+    if room_id not in conn.rooms or not isinstance(seq, int) or seq < 1:
+        return
+    update = await receipts.advance(state.session_factory, room_id, conn.user_id, event["type"], seq)
+    if update is not None:  # only broadcast real progress
+        await state.hub.publish(room_id, update)
+
+
 HANDLERS = {
     "send": handle_send,
     "subscribe": handle_subscribe,
     "ping": handle_ping,
     "typing": handle_typing,
+    "delivered": handle_receipt,
+    "read": handle_receipt,
 }

@@ -31,6 +31,15 @@ async def is_member(session: AsyncSession, room_id: int, user_id: int) -> bool:
     ) is not None
 
 
+async def last_seqs(session_factory: async_sessionmaker, room_ids: list[int]) -> dict[str, int]:
+    """{room_id: last_seq}; JSON object keys are strings."""
+    if not room_ids:
+        return {}
+    async with session_factory() as session:
+        rows = await session.execute(select(Room.id, Room.last_seq).where(Room.id.in_(room_ids)))
+    return {str(room_id): seq for room_id, seq in rows}
+
+
 async def room_member_ids(session_factory: async_sessionmaker, room_id: int) -> list[int]:
     async with session_factory() as session:
         return list(await session.scalars(select(RoomMember.user_id).where(RoomMember.room_id == room_id)))
