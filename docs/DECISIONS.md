@@ -46,3 +46,27 @@ Every important choice in Pulsewire, the alternatives, and why.
 ## History
 
 - **Cursor pagination on seq** (`before_seq` scrolls up, `after_seq` catches up), not OFFSET. New messages arrive while you scroll, so offsets shift and you would see duplicates or skip messages. `seq < X` always means the same rows, and the `(room_id, seq)` unique index turns every page into an index range scan.
+
+## Horizontal scaling: Redis pub/sub
+
+### One channel per room, subscribed only while a local socket is in the room
+- **How:** every room event goes `PUBLISH room:<id>`; each instance's single pub/sub connection subscribes to `room:<id>` when its **first** local socket joins that room and unsubscribes when the **last** leaves. Tested with `PUBSUB NUMSUB`.
+- **Every event takes the bus path, even for same-instance receivers.** One code path means the single-instance case is not special and cannot hide bugs.
+- **Every message carries `served_by`** (the instance that persisted it) **and `delivered_via`** (the instance that pushed it to this socket). The cross-server test asserts `served_by=test-1, delivered_via=test-2`.
+- **Control experiment:** with `USE_REDIS_BUS=false` the same test shows Bob on api-2 never receives Alice's message. That is exactly the bug a naive "store sockets in a dict" chat has once you add a second server.
+
+### Alternatives considered
+| Option | Why not (here) |
+|---|---|
+| Sticky sessions only | Users in one room still land on different servers; it only helps if everyone in a room is pinned to one box. |
+| One global channel for everything | Every instance receives every event of every room and filters it, which wastes CPU and bandwidth as rooms grow. |
+| Channel per user | Fan-out happens at publish time (N publishes per message for N members); per-room channels publish once. |
+| Instances call each other directly (HTTP/gRPC mesh) | Each instance must know the others and who is where; Redis is the rendezvous point we already run. |
+| Redis Streams / Kafka | See limitations below. Right for durability, heavier than needed here. |
+
+### Limitations of pub/sub, and what would fix them at larger scale
+- **At-most-once, fire-and-forget.** If an instance is restarting, or briefly disconnected from Redis at the moment of `PUBLISH`, its sockets never receive that event. Pub/sub keeps no history.
+- **Why that is acceptable here:** messages are persisted **before** publishing, every message has a gapless per-room `seq`, and clients detect gaps and fetch `after_seq` from history on reconnect. A lost broadcast costs a little latency, never data. Typing and presence events are ephemeral anyway.
+- **Redis Streams** (`XADD` per room, consumer reads with `XREAD` from a last ID) would make the bus itself replayable: an instance that comes back resumes from the last stream ID it saw, with trimming via `MAXLEN`.
+- **Kafka** (topic partitioned by room id) adds durable, replicated, ordered logs, with consumer groups and replay measured in days, and scales to very high message rates across many brokers. The cost is a heavier system to run, and per-partition (not per-room) ordering unless rooms map to partitions.
+- **A single Redis is also a single point of failure and a throughput ceiling.** Next steps would be Redis Sentinel/Cluster (sharded pub/sub in Redis 7 with `SSUBSCRIBE`) or moving to one of the above.

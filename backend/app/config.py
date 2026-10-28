@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://pulse:pulse@localhost:5433/pulsewire"
     redis_url: str = "redis://localhost:6373/0"
 
+    # Redis pub/sub between instances. False = in-process only (one instance).
+    use_redis_bus: bool = True
+
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 24 * 60

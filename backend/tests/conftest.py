@@ -145,7 +145,11 @@ async def make_room(db):
 
 # --- small WebSocket client helpers used by the realtime tests ---------------
 async def connect(server: Server, token: str):
-    return await websockets.connect(f"{server.ws}?token={token}")
+    # max_queue=None: tests often skip over events they do not care about.
+    # With the default bounded queue (16 frames) an un-drained client stops
+    # reading TCP, the server's close frame gets stuck behind unread data,
+    # and every close() waits for its timeout (we measured 3 s per socket).
+    return await websockets.connect(f"{server.ws}?token={token}", max_queue=None, close_timeout=2)
 
 
 async def receive_until(ws, predicate, timeout: float = 5.0) -> dict:
